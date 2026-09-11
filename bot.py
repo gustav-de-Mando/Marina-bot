@@ -46,15 +46,32 @@ async def global_prefix_check(ctx):
     if not ok: await ctx.send('❌ Dieser Command ist hier deaktiviert oder ignoriert.')
     return ok
 
+def ensure_command_descriptions():
+    for command in bot.commands:
+        desc=(getattr(command,'description','') or '').strip()
+        if not desc:
+            desc=f'Führt den Befehl {command.name} aus.'
+            command.description=desc
+        app_command=getattr(command,'app_command',None)
+        if app_command is not None and not (getattr(app_command,'description','') or '').strip():
+            app_command.description=desc[:100]
+
 @bot.event
 async def on_ready():
     print(f'✅ {BOT_NAME} eingeloggt als {bot.user} ({bot.user.id})'); await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching,name='deinen Server'))
     if not getattr(bot,'_synced_once',False):
         try:
-            synced=await bot.tree.sync(); print(f'🔄 {len(synced)} Slash-Commands synchronisiert.')
+            ensure_command_descriptions()
             gid=os.environ.get('GUILD_ID','').strip()
             if gid.isdigit():
-                g=discord.Object(id=int(gid)); bot.tree.copy_global_to(guild=g); await bot.tree.sync(guild=g)
+                g=discord.Object(id=int(gid))
+                bot.tree.copy_global_to(guild=g)
+                synced=await bot.tree.sync(guild=g)
+                bot.tree.clear_commands(guild=None)
+                await bot.tree.sync()
+                print(f'🔄 {len(synced)} Slash-Commands für Test-Server synchronisiert; globale Duplikate entfernt.')
+            else:
+                synced=await bot.tree.sync(); print(f'🔄 {len(synced)} globale Slash-Commands synchronisiert.')
             bot._synced_once=True
         except Exception as e:print('Sync-Fehler:',e)
 
@@ -73,9 +90,11 @@ async def load_cogs():
 
 def run_dashboard():
     app=create_dashboard(bot); app.run(host='0.0.0.0',port=int(os.environ.get('PORT',8080)),use_reloader=False)
+
 async def main():
     async with bot:
         await load_cogs(); token=os.environ.get('DISCORD_TOKEN')
         if not token:raise RuntimeError('DISCORD_TOKEN fehlt')
         Thread(target=run_dashboard,daemon=True).start(); await bot.start(token)
+
 if __name__=='__main__':asyncio.run(main())
