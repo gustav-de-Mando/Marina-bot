@@ -10,6 +10,7 @@ from dashboard.app import create_dashboard
 load_dotenv(); init_db()
 DEFAULT_PREFIX=os.environ.get('DEFAULT_PREFIX','-')[:5] or '-'
 BOT_NAME=os.environ.get('BOT_NAME','Mr. Flipper')
+MAX_TOP_LEVEL_SLASH=100
 
 def allowed_for(guild,channel,user,command_name):
     if not guild:return True
@@ -22,6 +23,17 @@ def allowed_for(guild,channel,user,command_name):
     return True
 
 class UnifiedTree(app_commands.CommandTree):
+    def add_command(self,command,*,guild=None,guilds=None,override=False):
+        # Discord erlaubt maximal 100 Top-Level Slash-Commands. Ein Hybrid-Command
+        # bleibt weiterhin als Prefix-Command verfügbar, auch wenn sein App-Command
+        # nicht mehr in den Tree aufgenommen wird. Dadurch scheitert nicht das ganze Cog.
+        if guild is None and guilds is None:
+            current=len(super().get_commands(guild=None))
+            if current>=MAX_TOP_LEVEL_SLASH:
+                print(f'⚠️ Slash-Limit erreicht: /{getattr(command,"name","?")} bleibt nur als Prefix-Command verfügbar.')
+                return None
+        return super().add_command(command,guild=guild,guilds=guilds,override=override)
+
     async def interaction_check(self,interaction:discord.Interaction)->bool:
         if not interaction.guild or not interaction.command:return True
         ok=allowed_for(interaction.guild,interaction.channel,interaction.user,interaction.command.name)
@@ -37,7 +49,16 @@ async def dynamic_prefix(bot,message):
 intents=discord.Intents.default(); intents.message_content=True; intents.members=True; intents.reactions=True; intents.voice_states=True
 bot=commands.Bot(command_prefix=dynamic_prefix,intents=intents,help_command=None,case_insensitive=True,tree_cls=UnifiedTree)
 
-COGS=['cogs.admin','cogs.moderation','cogs.dyno_manager','cogs.dyno_misc','cogs.dyno_roles_tags','cogs.custom_commands','cogs.giveaways','cogs.starboard','cogs.info_plus','cogs.automod','cogs.logging_plus','cogs.welcome','cogs.levels','cogs.tickets','cogs.suggestions','cogs.utility','cogs.counting','cogs.dice','cogs.reaction_roles','cogs.fun','cogs.music','cogs.economy','cogs.bump','cogs.backup']
+# Reihenfolge = Slash-Priorität. Die wichtigsten/gewünschten Module werden zuerst
+# registriert. Falls wir über 100 kommen, funktionieren spätere Commands weiterhin
+# mit Prefix, statt dass das komplette Cog nicht geladen wird.
+COGS=[
+    'cogs.admin','cogs.moderation','cogs.info_plus','cogs.levels','cogs.tickets',
+    'cogs.suggestions','cogs.utility','cogs.counting','cogs.dice','cogs.reaction_roles',
+    'cogs.fun','cogs.music','cogs.economy','cogs.bump','cogs.backup','cogs.giveaways',
+    'cogs.starboard','cogs.custom_commands','cogs.welcome','cogs.automod','cogs.logging_plus',
+    'cogs.dyno_manager','cogs.dyno_misc','cogs.dyno_roles_tags'
+]
 
 @bot.check
 async def global_prefix_check(ctx):
@@ -85,9 +106,12 @@ async def on_command_error(ctx,error):
     print('Command-Fehler:',repr(error)); await ctx.send(f'❌ Fehler: {error}')
 
 async def load_cogs():
+    loaded=0
     for cog in COGS:
-        try:await bot.load_extension(cog); print('✅ Cog:',cog)
+        try:
+            await bot.load_extension(cog); loaded+=1; print('✅ Cog:',cog)
         except Exception as e:print('❌ Cog:',cog,e)
+    print(f'✅ {loaded}/{len(COGS)} Cogs geladen • {len(bot.commands)} Prefix/Hybrid-Commands • {len(bot.tree.get_commands())} Slash-Commands im Tree')
 
 def run_dashboard():
     app=create_dashboard(bot); app.run(host='0.0.0.0',port=int(os.environ.get('PORT',8080)),use_reloader=False)
