@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: discord-all-in-one-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DASHBOARD_SECRET
+        generateValue: true
+      - key: DASHBOARD_URL
+        sync: false
+      - key: PORT
+        value: 8080
+      - key: GUILD_ID
+        sync: false
+      - key: BOT_DB_PATH
+        value: data/bot.db
