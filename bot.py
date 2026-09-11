@@ -8,6 +8,8 @@ from core.storage import init_db,get_guild_settings,one
 from dashboard.app import create_dashboard
 
 load_dotenv(); init_db()
+DEFAULT_PREFIX=os.environ.get('DEFAULT_PREFIX','-')[:5] or '-'
+BOT_NAME=os.environ.get('BOT_NAME','Mr. Flipper')
 
 def allowed_for(guild,channel,user,command_name):
     if not guild:return True
@@ -29,8 +31,8 @@ class UnifiedTree(app_commands.CommandTree):
         return ok
 
 async def dynamic_prefix(bot,message):
-    if not message.guild:return commands.when_mentioned_or('!')(bot,message)
-    return commands.when_mentioned_or(get_guild_settings(message.guild.id).get('prefix','!'))(bot,message)
+    if not message.guild:return commands.when_mentioned_or(DEFAULT_PREFIX)(bot,message)
+    return commands.when_mentioned_or(get_guild_settings(message.guild.id).get('prefix',DEFAULT_PREFIX))(bot,message)
 
 intents=discord.Intents.default(); intents.message_content=True; intents.members=True; intents.reactions=True; intents.voice_states=True
 bot=commands.Bot(command_prefix=dynamic_prefix,intents=intents,help_command=None,case_insensitive=True,tree_cls=UnifiedTree)
@@ -46,7 +48,7 @@ async def global_prefix_check(ctx):
 
 @bot.event
 async def on_ready():
-    print(f'✅ Eingeloggt als {bot.user} ({bot.user.id})'); await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching,name='Server verwalten'))
+    print(f'✅ {BOT_NAME} eingeloggt als {bot.user} ({bot.user.id})'); await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching,name='deinen Server'))
     if not getattr(bot,'_synced_once',False):
         try:
             synced=await bot.tree.sync(); print(f'🔄 {len(synced)} Slash-Commands synchronisiert.')
