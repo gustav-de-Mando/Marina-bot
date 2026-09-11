@@ -10,7 +10,66 @@ from dashboard.app import create_dashboard
 load_dotenv(); init_db()
 DEFAULT_PREFIX=os.environ.get('DEFAULT_PREFIX','-')[:5] or '-'
 BOT_NAME=os.environ.get('BOT_NAME','Mr. Flipper')
-MAX_TOP_LEVEL_SLASH=100
+
+# Slash-Commands werden nach Funktionen gruppiert. So zählen z. B. /music,
+# /economy und /backup jeweils nur als EIN Top-Level-Command bei Discord.
+GROUP_DESCRIPTIONS={
+    'config':'Server- und Bot-Einstellungen.',
+    'mod':'Moderationsbefehle und Mod-Fälle.',
+    'channel':'Channel- und Rollenverwaltung.',
+    'levels':'Level- und XP-Verwaltung.',
+    'tickets':'Ticket-System verwalten.',
+    'utils':'Nützliche Server- und Nutzerbefehle.',
+    'counting':'Counting-System verwalten.',
+    'games':'Kleine Spiele und Zufallsbefehle.',
+    'reactions':'Reaction-Roles verwalten.',
+    'fun':'Spaß- und Social-Befehle.',
+    'music':'Musiksteuerung.',
+    'economy':'Economy-System.',
+    'bump':'Bump-Erinnerungen verwalten.',
+    'backup':'Server-Backups verwalten.',
+    'giveaway':'Giveaways verwalten.',
+    'starboard':'Starboard verwalten.',
+    'custom':'Custom Commands verwalten.',
+    'welcome':'Welcome- und Goodbye-System.',
+    'server':'Weitere Serververwaltung.',
+    'tools':'Weitere nützliche Tools.',
+    'roles':'Rollen, Self-Ranks und Tags.'
+}
+
+ROOT_SLASH_COMMANDS={'help','rank','leaderboard','suggest','ping'}
+MOD_CHANNEL_COMMANDS={'clear','slowmode','lock','unlock','lockdown','members','role','temprole','rolepersist'}
+LEVEL_ADMIN_COMMANDS={'setxp','addxp','levelrole','levelroles','levelroles_create'}
+
+MODULE_GROUPS={
+    'cogs.admin':'config',
+    'cogs.tickets':'tickets',
+    'cogs.utility':'utils',
+    'cogs.counting':'counting',
+    'cogs.dice':'games',
+    'cogs.reaction_roles':'reactions',
+    'cogs.fun':'fun',
+    'cogs.music':'music',
+    'cogs.economy':'economy',
+    'cogs.bump':'bump',
+    'cogs.backup':'backup',
+    'cogs.giveaways':'giveaway',
+    'cogs.starboard':'starboard',
+    'cogs.custom_commands':'custom',
+    'cogs.welcome':'welcome',
+    'cogs.dyno_manager':'server',
+    'cogs.dyno_misc':'tools',
+    'cogs.dyno_roles_tags':'roles'
+}
+
+def slash_group_for(command):
+    name=getattr(command,'name','')
+    if name in ROOT_SLASH_COMMANDS:return None
+    module=getattr(getattr(command,'callback',None),'__module__','')
+    if module=='cogs.moderation':return 'channel' if name in MOD_CHANNEL_COMMANDS else 'mod'
+    if module=='cogs.levels':return 'levels' if name in LEVEL_ADMIN_COMMANDS else None
+    if module=='cogs.info_plus':return None
+    return MODULE_GROUPS.get(module)
 
 def allowed_for(guild,channel,user,command_name):
     if not guild:return True
@@ -23,23 +82,47 @@ def allowed_for(guild,channel,user,command_name):
     return True
 
 class UnifiedTree(app_commands.CommandTree):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self._feature_groups={}
+
+    def _get_feature_group(self,name):
+        group=self._feature_groups.get(name)
+        if group is None:
+            group=app_commands.Group(name=name,description=GROUP_DESCRIPTIONS[name])
+            self._feature_groups[name]=group
+            super().add_command(group)
+        return group
+
     def add_command(self,command,*,guild=None,guilds=None,override=False):
-        # Discord erlaubt maximal 100 Top-Level Slash-Commands. Hybrid-Commands
-        # über dem Limit bleiben als Prefix-Commands verfügbar, statt ganze Cogs
-        # beim Laden scheitern zu lassen.
-        if guild is None and guilds is None:
-            current=len(super().get_commands(guild=None))
-            if current>=MAX_TOP_LEVEL_SLASH:
-                print(f'⚠️ Slash-Limit erreicht: /{getattr(command,"name","?")} bleibt nur als Prefix-Command verfügbar.')
+        # Normale Cog-Hybrid-Commands kommen ohne guild/guilds hier an. Diese
+        # werden automatisch in Feature-Gruppen einsortiert. Prefix-Commands
+        # behalten dabei weiterhin ihren bisherigen Namen, z. B. -play.
+        if guild is None and guilds is None and not isinstance(command,app_commands.Group):
+            group_name=slash_group_for(command)
+            if group_name:
+                group=self._get_feature_group(group_name)
+                try:
+                    group.add_command(command,override=override)
+                except TypeError:
+                    group.add_command(command)
                 return None
             return super().add_command(command,override=override)
         if guild is not None:
             return super().add_command(command,guild=guild,override=override)
-        return super().add_command(command,guilds=guilds,override=override)
+        if guilds is not None:
+            return super().add_command(command,guilds=guilds,override=override)
+        return super().add_command(command,override=override)
 
     async def interaction_check(self,interaction:discord.Interaction)->bool:
         if not interaction.guild or not interaction.command:return True
-        ok=allowed_for(interaction.guild,interaction.channel,interaction.user,interaction.command.name)
+        # Bei Gruppen soll die eigentliche Subcommand-Regel geprüft werden.
+        command_name=getattr(interaction.command,'name','')
+        data=interaction.data or {}
+        options=data.get('options') or []
+        if options and isinstance(options[0],dict) and options[0].get('name'):
+            command_name=options[0]['name']
+        ok=allowed_for(interaction.guild,interaction.channel,interaction.user,command_name)
         if not ok:
             try: await interaction.response.send_message('❌ Dieser Command ist hier deaktiviert oder ignoriert.',ephemeral=True)
             except: pass
@@ -52,9 +135,6 @@ async def dynamic_prefix(bot,message):
 intents=discord.Intents.default(); intents.message_content=True; intents.members=True; intents.reactions=True; intents.voice_states=True
 bot=commands.Bot(command_prefix=dynamic_prefix,intents=intents,help_command=None,case_insensitive=True,tree_cls=UnifiedTree)
 
-# Reihenfolge = Slash-Priorität. Die wichtigsten/gewünschten Module werden zuerst
-# registriert. Falls wir über 100 kommen, funktionieren spätere Commands weiterhin
-# mit Prefix, statt dass das komplette Cog nicht geladen wird.
 COGS=[
     'cogs.admin','cogs.moderation','cogs.info_plus','cogs.levels','cogs.tickets',
     'cogs.suggestions','cogs.utility','cogs.counting','cogs.dice','cogs.reaction_roles',
@@ -94,9 +174,9 @@ async def on_ready():
                 synced=await bot.tree.sync(guild=g)
                 bot.tree.clear_commands(guild=None)
                 await bot.tree.sync()
-                print(f'🔄 {len(synced)} Slash-Commands für Test-Server synchronisiert; globale Duplikate entfernt.')
+                print(f'🔄 {len(synced)} gruppierte Slash-Commands für den Server synchronisiert; globale Duplikate entfernt.')
             else:
-                synced=await bot.tree.sync(); print(f'🔄 {len(synced)} globale Slash-Commands synchronisiert.')
+                synced=await bot.tree.sync(); print(f'🔄 {len(synced)} gruppierte globale Slash-Commands synchronisiert.')
             bot._synced_once=True
         except Exception as e:print('Sync-Fehler:',e)
 
@@ -114,7 +194,7 @@ async def load_cogs():
         try:
             await bot.load_extension(cog); loaded+=1; print('✅ Cog:',cog)
         except Exception as e:print('❌ Cog:',cog,e)
-    print(f'✅ {loaded}/{len(COGS)} Cogs geladen • {len(bot.commands)} Prefix/Hybrid-Commands • {len(bot.tree.get_commands())} Slash-Commands im Tree')
+    print(f'✅ {loaded}/{len(COGS)} Cogs geladen • {len(bot.commands)} Prefix/Hybrid-Commands • {len(bot.tree.get_commands())} Top-Level Slash-Commands')
 
 def run_dashboard():
     app=create_dashboard(bot); app.run(host='0.0.0.0',port=int(os.environ.get('PORT',8080)),use_reloader=False)
