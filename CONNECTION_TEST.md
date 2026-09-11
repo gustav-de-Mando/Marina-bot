@@ -1,3 +1,3 @@
 # Verbindungstest
 
-ChatGPT konnte diese Datei erfolgreich in das Repository schreiben.
+Mando konnte diese Datei erfolgreich in das Repository schreiben.
