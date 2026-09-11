@@ -1,11 +1,11 @@
 import discord, random, asyncio
 from discord.ext import commands
-from core.storage import execute,query,one,get_guild_settings,update_guild_settings
+from core.storage import execute,query,one
 
 class DynoManager(commands.Cog):
     def __init__(self,bot): self.bot=bot
 
-    @commands.hybrid_command(name='addemote',description='Fügt ein Custom Emoji über eine Bild-URL hinzu.')
+    @commands.hybrid_command(name='addemote',description='Fügt ein Custom-Emoji über eine Bild-URL hinzu.')
     @commands.has_permissions(manage_emojis_and_stickers=True)
     async def addemote(self,ctx,name:str,url:str):
         import aiohttp
@@ -26,19 +26,19 @@ class DynoManager(commands.Cog):
     async def delmod(self,ctx,role:discord.Role):
         execute('DELETE FROM moderators WHERE guild_id=? AND role_id=?',(ctx.guild.id,role.id)); await ctx.send('✅ Moderatorrolle entfernt.')
 
-    @commands.hybrid_command(name='listmods',description='Listet konfigurierte Moderatorrollen.')
+    @commands.hybrid_command(name='listmods',description='Listet die konfigurierten Moderatorrollen auf.')
     async def listmods(self,ctx):
         rows=query('SELECT role_id FROM moderators WHERE guild_id=?',(ctx.guild.id,)); roles=[ctx.guild.get_role(r['role_id']) for r in rows]; roles=[r for r in roles if r]
         await ctx.send('**Moderatorrollen:**\n'+('\n'.join(r.mention for r in roles) if roles else 'Keine.'))
 
-    @commands.hybrid_command(name='addrole',description='Erstellt eine neue Rolle.')
+    @commands.hybrid_command(name='addrole',description='Erstellt eine neue Serverrolle.')
     @commands.has_permissions(manage_roles=True)
     async def addrole(self,ctx,name:str,color:str='#99aab5',hoist:bool=False):
         try: c=discord.Color(int(color.lstrip('#'),16))
         except: return await ctx.send('❌ Farbe als Hex, z. B. `#5865F2`.')
         r=await ctx.guild.create_role(name=name,color=c,hoist=hoist,reason=f'Von {ctx.author}'); await ctx.send(f'✅ Rolle erstellt: {r.mention}')
 
-    @commands.hybrid_command(name='delrole',description='Löscht eine Rolle.')
+    @commands.hybrid_command(name='delrole',description='Löscht eine Serverrolle.')
     @commands.has_permissions(manage_roles=True)
     async def delrole(self,ctx,role:discord.Role):
         n=role.name; await role.delete(reason=f'Von {ctx.author}'); await ctx.send(f'✅ Rolle `{n}` gelöscht.')
@@ -55,18 +55,18 @@ class DynoManager(commands.Cog):
     async def rolename(self,ctx,role:discord.Role,*,name:str):
         await role.edit(name=name,reason=f'Von {ctx.author}'); await ctx.send('✅ Rollenname geändert.')
 
-    @commands.hybrid_command(name='mentionable',description='Schaltet die Erwähnbarkeit einer Rolle um.')
+    @commands.hybrid_command(name='mentionable',description='Schaltet um, ob eine Rolle erwähnt werden kann.')
     @commands.has_permissions(manage_roles=True)
     async def mentionable(self,ctx,role:discord.Role):
         await role.edit(mentionable=not role.mentionable,reason=f'Von {ctx.author}'); await ctx.send(f'✅ Erwähnbar: **{role.mentionable}**')
 
-    @commands.hybrid_command(name='announce',description='Sendet eine Ankündigung.')
+    @commands.hybrid_command(name='announce',description='Sendet eine Ankündigung als Embed in einen Channel.')
     @commands.has_permissions(manage_messages=True)
     async def announce(self,ctx,channel:discord.TextChannel,*,text:str):
         e=discord.Embed(title='📢 Ankündigung',description=text,color=discord.Color.blurple()); e.set_footer(text=f'Von {ctx.author}')
         await channel.send(embed=e); await ctx.send('✅ Gesendet.',ephemeral=True)
 
-    @commands.hybrid_command(name='command',description='Aktiviert/deaktiviert einen Command auf dem Server.')
+    @commands.hybrid_command(name='command',description='Aktiviert oder deaktiviert einen Bot-Command auf diesem Server.')
     @commands.has_permissions(administrator=True)
     async def command_toggle(self,ctx,command_name:str,enabled:bool):
         execute('INSERT INTO command_rules(guild_id,command,enabled) VALUES(?,?,?) ON CONFLICT(guild_id,command) DO UPDATE SET enabled=excluded.enabled',(ctx.guild.id,command_name.lower().lstrip('/!'),int(enabled)))
@@ -80,13 +80,15 @@ class DynoManager(commands.Cog):
             execute('INSERT OR IGNORE INTO ignored(guild_id,kind,target_id) VALUES(?,?,?)',(ctx.guild.id,kind,target_id)); state='ignoriert'
         await ctx.send(f'✅ Ziel wird {state}.')
 
-    @commands.hybrid_command(name='ignorechannel')
+    @commands.hybrid_command(name='ignorechannel',description='Ignoriert oder aktiviert Bot-Commands in einem bestimmten Channel wieder.')
     @commands.has_permissions(administrator=True)
     async def ignorechannel(self,ctx,channel:discord.TextChannel): await self._ignore(ctx,'channel',channel.id)
-    @commands.hybrid_command(name='ignorerole')
+
+    @commands.hybrid_command(name='ignorerole',description='Ignoriert oder aktiviert Bot-Commands für eine bestimmte Rolle wieder.')
     @commands.has_permissions(administrator=True)
     async def ignorerole(self,ctx,role:discord.Role): await self._ignore(ctx,'role',role.id)
-    @commands.hybrid_command(name='ignoreuser')
+
+    @commands.hybrid_command(name='ignoreuser',description='Ignoriert oder aktiviert Bot-Commands für einen bestimmten Nutzer wieder.')
     @commands.has_permissions(administrator=True)
     async def ignoreuser(self,ctx,member:discord.Member): await self._ignore(ctx,'user',member.id)
 
@@ -98,32 +100,9 @@ class DynoManager(commands.Cog):
             lines.append(f"• {r['kind']}: {getattr(obj,'mention',r['target_id'])}")
         await ctx.send('\n'.join(lines) if lines else 'Keine Ignore-Regeln.')
 
-    @commands.hybrid_command(name='language',description='Setzt die Sprache der Bot-Antworten.')
-    @commands.has_permissions(administrator=True)
-    async def language(self,ctx,language:str):
-        language=language.lower()
-        if language not in ('de','en'): return await ctx.send('❌ Unterstützt: `de`, `en`.')
-        update_guild_settings(ctx.guild.id,language=language); await ctx.send(f'✅ Sprache: `{language}`')
-
-    @commands.hybrid_command(name='modules',description='Listet Bot-Module und Status.')
-    async def modules(self,ctx):
-        s=get_guild_settings(ctx.guild.id); names=['automod','levels','welcome','goodbye','logs','tickets','suggestions','starboard','economy','music']
-        await ctx.send('\n'.join(f"{'✅' if s.get(n+'_enabled',True) else '❌'} `{n}`" for n in names))
-
-    @commands.hybrid_command(name='nick',description='Ändert den Bot-Nickname.')
-    @commands.has_permissions(manage_nicknames=True)
-    async def nick(self,ctx,*,nickname:str|None=None):
-        await ctx.guild.me.edit(nick=nickname,reason=f'Von {ctx.author}'); await ctx.send('✅ Bot-Nickname geändert.')
-
     @commands.hybrid_command(name='setnick',description='Ändert den Nickname eines Mitglieds.')
     @commands.has_permissions(manage_nicknames=True)
     async def setnick(self,ctx,member:discord.Member,*,nickname:str|None=None):
         await member.edit(nick=nickname,reason=f'Von {ctx.author}'); await ctx.send('✅ Nickname geändert.')
-
-    @commands.hybrid_command(name='clean',description='Löscht letzte Bot-Nachrichten im aktuellen Channel.')
-    @commands.has_permissions(manage_messages=True)
-    async def clean(self,ctx,amount:commands.Range[int,1,100]=20):
-        deleted=await ctx.channel.purge(limit=300,check=lambda m:m.author==self.bot.user or m.content.startswith(get_guild_settings(ctx.guild.id).get('prefix','!')))
-        await ctx.send(f'🧹 {min(len(deleted),amount)} Bot/Command-Nachrichten bereinigt.',delete_after=4)
 
 async def setup(bot): await bot.add_cog(DynoManager(bot))
