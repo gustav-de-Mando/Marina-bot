@@ -56,7 +56,7 @@ def create_dashboard(bot):
             for k in ('anti_spam','anti_caps','block_invites','anti_links','anti_mass_mentions'):changes[k]=k in request.form
             changes['blocked_words']=[x.strip() for x in request.form.get('blocked_words','').split(',') if x.strip()]
             changes['welcome_message']=request.form.get('welcome_message','')[:1800];changes['goodbye_message']=request.form.get('goodbye_message','')[:1800]
-            for key in ('modlog','welcome','goodbye','levelup','suggestions','tickets','starboard','bump'):
+            for key in ('modlog','messagelog','vclog','welcome','goodbye','levelup','suggestions','tickets','starboard','bump'):
                 raw=request.form.get(key+'_channel','').strip();changes[key+'_channel']=int(raw) if raw.isdigit() else None
             for key in ('autorole','bump_role'):
                 raw=request.form.get(key+'_id','').strip();changes[key+'_id']=int(raw) if raw.isdigit() else None
