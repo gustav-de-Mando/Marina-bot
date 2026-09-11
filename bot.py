@@ -49,12 +49,13 @@ async def global_prefix_check(ctx):
 def ensure_command_descriptions():
     for command in bot.commands:
         desc=(getattr(command,'description','') or '').strip()
-        if not desc:
+        if not desc or desc=='…':
             desc=f'Führt den Befehl {command.name} aus.'
             command.description=desc
         app_command=getattr(command,'app_command',None)
-        if app_command is not None and not (getattr(app_command,'description','') or '').strip():
-            app_command.description=desc[:100]
+        if app_command is not None:
+            app_desc=(getattr(app_command,'description','') or '').strip()
+            if not app_desc or app_desc=='…':app_command.description=desc[:100]
 
 @bot.event
 async def on_ready():
