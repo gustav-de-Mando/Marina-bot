@@ -24,15 +24,18 @@ def allowed_for(guild,channel,user,command_name):
 
 class UnifiedTree(app_commands.CommandTree):
     def add_command(self,command,*,guild=None,guilds=None,override=False):
-        # Discord erlaubt maximal 100 Top-Level Slash-Commands. Ein Hybrid-Command
-        # bleibt weiterhin als Prefix-Command verfügbar, auch wenn sein App-Command
-        # nicht mehr in den Tree aufgenommen wird. Dadurch scheitert nicht das ganze Cog.
+        # Discord erlaubt maximal 100 Top-Level Slash-Commands. Hybrid-Commands
+        # über dem Limit bleiben als Prefix-Commands verfügbar, statt ganze Cogs
+        # beim Laden scheitern zu lassen.
         if guild is None and guilds is None:
             current=len(super().get_commands(guild=None))
             if current>=MAX_TOP_LEVEL_SLASH:
                 print(f'⚠️ Slash-Limit erreicht: /{getattr(command,"name","?")} bleibt nur als Prefix-Command verfügbar.')
                 return None
-        return super().add_command(command,guild=guild,guilds=guilds,override=override)
+            return super().add_command(command,override=override)
+        if guild is not None:
+            return super().add_command(command,guild=guild,override=override)
+        return super().add_command(command,guilds=guilds,override=override)
 
     async def interaction_check(self,interaction:discord.Interaction)->bool:
         if not interaction.guild or not interaction.command:return True
