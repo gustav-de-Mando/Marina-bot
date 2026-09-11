@@ -3,5 +3,6 @@ Flask==3.1.2
 python-dotenv==1.1.1
 requests==2.32.5
 aiohttp>=3.10,<4
-yt-dlp
+yt-dlp[default]
+deno
 imageio-ffmpeg
