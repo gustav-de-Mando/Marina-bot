@@ -1,6 +1,10 @@
 import asyncio
+import base64
+import os
+import re
 import shutil
 
+import aiohttp
 import discord
 import yt_dlp
 from discord.ext import commands
@@ -18,11 +22,15 @@ YDL_OPTS = {
     'default_search': 'ytsearch1',
     'extract_flat': False,
     'source_address': '0.0.0.0',
+    # YouTube ändert seine Player-Auslieferung regelmäßig. Mehrere Clients geben
+    # yt-dlp eine bessere Chance, einen normalen, nicht-DRM Audio-Stream zu finden.
+    'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
 }
 FFMPEG_OPTS = {
     'before_options': '-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn',
 }
+SPOTIFY_TRACK_RE = re.compile(r'(?:open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]+)')
 
 
 def ffmpeg_executable():
@@ -47,6 +55,8 @@ class Music(commands.Cog):
         self.voice_locks = {}
         self.text_channels = {}
         self._ffmpeg = ffmpeg_executable()
+        self._spotify_token = None
+        self._spotify_token_expires = 0.0
 
     def q(self, guild_id):
         return self.queues.setdefault(guild_id, [])
@@ -58,7 +68,54 @@ class Music(commands.Cog):
         if ctx.interaction and not ctx.interaction.response.is_done():
             await ctx.defer()
 
-    async def extract(self, query):
+    async def spotify_token(self):
+        client_id = os.environ.get('SPOTIFY_CLIENT_ID', '').strip()
+        client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET', '').strip()
+        if not client_id or not client_secret:
+            return None
+
+        now = asyncio.get_running_loop().time()
+        if self._spotify_token and now < self._spotify_token_expires - 30:
+            return self._spotify_token
+
+        basic = base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode()
+        headers = {'Authorization': f'Basic {basic}', 'Content-Type': 'application/x-www-form-urlencoded'}
+        data = {'grant_type': 'client_credentials'}
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post('https://accounts.spotify.com/api/token', headers=headers, data=data) as response:
+                if response.status != 200:
+                    raise RuntimeError(f'Spotify Auth HTTP {response.status}')
+                payload = await response.json()
+        self._spotify_token = payload['access_token']
+        self._spotify_token_expires = now + int(payload.get('expires_in', 3600))
+        return self._spotify_token
+
+    async def spotify_track_query(self, query):
+        match = SPOTIFY_TRACK_RE.search(query)
+        if not match:
+            return None
+
+        token = await self.spotify_token()
+        if not token:
+            raise RuntimeError('Spotify ist nicht konfiguriert. SPOTIFY_CLIENT_ID und SPOTIFY_CLIENT_SECRET fehlen.')
+
+        track_id = match.group(1)
+        timeout = aiohttp.ClientTimeout(total=10)
+        headers = {'Authorization': f'Bearer {token}'}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f'https://api.spotify.com/v1/tracks/{track_id}', headers=headers) as response:
+                if response.status != 200:
+                    raise RuntimeError(f'Spotify Track HTTP {response.status}')
+                track = await response.json()
+
+        artists = ', '.join(a.get('name', '') for a in track.get('artists', []) if a.get('name'))
+        title = track.get('name') or 'Unbekannter Titel'
+        # Spotify-Audio wird NICHT in Discord gestreamt. Wir verwenden nur die
+        # Metadaten und suchen denselben Song anschließend auf YouTube.
+        return f'{title} {artists} official audio'.strip(), title, artists
+
+    async def extract_youtube(self, query):
         loop = asyncio.get_running_loop()
 
         def work():
@@ -79,6 +136,17 @@ class Music(commands.Cog):
                 }
 
         return await loop.run_in_executor(None, work)
+
+    async def extract(self, query):
+        spotify = await self.spotify_track_query(query)
+        if spotify:
+            search_query, spotify_title, spotify_artists = spotify
+            track = await self.extract_youtube(search_query)
+            track['requested_via'] = 'spotify'
+            track['spotify_title'] = spotify_title
+            track['spotify_artists'] = spotify_artists
+            return track
+        return await self.extract_youtube(query)
 
     async def cleanup_voice(self, guild):
         vc = guild.voice_client
@@ -109,18 +177,11 @@ class Music(commands.Cog):
                         return None
                 return vc
 
-            # Wichtig: reconnect=False. discord.py versucht sonst bei einem kaputten
-            # Voice-Handshake dauerhaft neu zu verbinden, wodurch der Bot sichtbar
-            # immer wieder joint und leavt.
             if vc is not None:
                 await self.cleanup_voice(ctx.guild)
 
             try:
-                vc = await target.connect(
-                    timeout=10.0,
-                    reconnect=False,
-                    self_deaf=True,
-                )
+                vc = await target.connect(timeout=10.0, reconnect=False, self_deaf=True)
                 return vc
             except asyncio.TimeoutError:
                 print(f'❌ Voice connect timeout ({ctx.guild.id})')
@@ -156,11 +217,7 @@ class Music(commands.Cog):
             self.current[gid] = track
 
         try:
-            source = discord.FFmpegPCMAudio(
-                track['url'],
-                executable=self._ffmpeg,
-                **FFMPEG_OPTS,
-            )
+            source = discord.FFmpegPCMAudio(track['url'], executable=self._ffmpeg, **FFMPEG_OPTS)
             source = discord.PCMVolumeTransformer(source, volume=self.volumes.get(gid, 0.5))
         except Exception as exc:
             print(f'❌ Musik/FFmpeg ({guild.id}): {type(exc).__name__}: {exc}')
@@ -178,9 +235,7 @@ class Music(commands.Cog):
         def after(error):
             if error:
                 print(f'❌ Voice-Player ({guild.id}): {error}')
-            self.bot.loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self.play_next(guild))
-            )
+            self.bot.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.play_next(guild)))
 
         try:
             vc.play(source, after=after)
@@ -208,7 +263,7 @@ class Music(commands.Cog):
         await self.cleanup_voice(ctx.guild)
         await ctx.send('👋 Voice verlassen und Queue geleert.')
 
-    @commands.hybrid_command(name='play', description='Spielt einen Song oder fügt ihn zur Warteschlange hinzu.')
+    @commands.hybrid_command(name='play', description='Spielt YouTube-Suchen/Links oder Spotify-Tracklinks ab.')
     async def play(self, ctx, *, query: str):
         await self.defer_if_needed(ctx)
         vc = await self.ensure_voice(ctx)
@@ -217,11 +272,19 @@ class Music(commands.Cog):
         try:
             track = await self.extract(query)
         except Exception as exc:
-            print(f'❌ yt-dlp: {type(exc).__name__}: {exc}')
+            message = str(exc)
+            print(f'❌ Musik-Quelle: {type(exc).__name__}: {message}')
+            if 'DRM' in message.upper():
+                return await ctx.send('❌ Diese Quelle ist DRM-geschützt und kann nicht abgespielt werden.')
+            if 'Spotify ist nicht konfiguriert' in message:
+                return await ctx.send('❌ Spotify-Link erkannt, aber Spotify API ist noch nicht konfiguriert.')
             return await ctx.send(f'❌ Audio konnte nicht geladen werden: `{type(exc).__name__}`')
 
         self.q(ctx.guild.id).append(track)
-        await ctx.send(f'🎵 Hinzugefügt: **{track["title"]}**')
+        if track.get('requested_via') == 'spotify':
+            await ctx.send(f'🎵 Spotify erkannt: **{track["spotify_title"]}** – {track["spotify_artists"]}\n🔎 Passende YouTube-Audioquelle gefunden und zur Queue hinzugefügt.')
+        else:
+            await ctx.send(f'🎵 Hinzugefügt: **{track["title"]}**')
         if not vc.is_playing() and not vc.is_paused():
             await self.play_next(ctx.guild)
 
