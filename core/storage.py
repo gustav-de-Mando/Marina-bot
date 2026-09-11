@@ -1,6 +1,7 @@
 import json, os, sqlite3, threading, time
 from typing import Any
 DB_PATH=os.getenv('BOT_DB_PATH','data/bot.db')
+DEFAULT_PREFIX=os.getenv('DEFAULT_PREFIX','-')[:5] or '-'
 os.makedirs(os.path.dirname(DB_PATH),exist_ok=True)
 _lock=threading.RLock()
 def _connect():
@@ -9,8 +10,8 @@ def _connect():
 
 def init_db():
     with _lock,_connect() as db:
-        db.executescript('''
-        CREATE TABLE IF NOT EXISTS guild_settings(guild_id INTEGER PRIMARY KEY,prefix TEXT NOT NULL DEFAULT '!',settings_json TEXT NOT NULL DEFAULT '{}',updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+        db.executescript(f'''
+        CREATE TABLE IF NOT EXISTS guild_settings(guild_id INTEGER PRIMARY KEY,prefix TEXT NOT NULL DEFAULT '{DEFAULT_PREFIX}',settings_json TEXT NOT NULL DEFAULT '{{}}',updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS warnings(id INTEGER PRIMARY KEY AUTOINCREMENT,guild_id INTEGER,user_id INTEGER,moderator_id INTEGER,reason TEXT,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS mod_cases(id INTEGER PRIMARY KEY AUTOINCREMENT,guild_id INTEGER,user_id INTEGER,moderator_id INTEGER,action TEXT,reason TEXT,expires_at REAL,active INTEGER DEFAULT 1,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY AUTOINCREMENT,guild_id INTEGER,user_id INTEGER,moderator_id INTEGER,note TEXT,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
@@ -36,11 +37,11 @@ def get_guild_settings(gid:int)->dict[str,Any]:
     with _lock,_connect() as db:
         r=db.execute('SELECT prefix,settings_json FROM guild_settings WHERE guild_id=?',(gid,)).fetchone()
         if not r:
-            db.execute('INSERT OR IGNORE INTO guild_settings(guild_id) VALUES(?)',(gid,)); return {'prefix':'!'}
-        d=json.loads(r['settings_json'] or '{}'); d['prefix']=r['prefix'] or '!'; return d
+            db.execute('INSERT OR IGNORE INTO guild_settings(guild_id,prefix) VALUES(?,?)',(gid,DEFAULT_PREFIX)); return {'prefix':DEFAULT_PREFIX}
+        d=json.loads(r['settings_json'] or '{}'); d['prefix']=r['prefix'] or DEFAULT_PREFIX; return d
 
 def update_guild_settings(gid:int,**changes):
-    cur=get_guild_settings(gid); prefix=str(changes.pop('prefix',cur.pop('prefix','!')))[:5] or '!'; cur.update(changes)
+    cur=get_guild_settings(gid); prefix=str(changes.pop('prefix',cur.pop('prefix',DEFAULT_PREFIX)))[:5] or DEFAULT_PREFIX; cur.update(changes)
     with _lock,_connect() as db:
         db.execute("INSERT INTO guild_settings(guild_id,prefix,settings_json) VALUES(?,?,?) ON CONFLICT(guild_id) DO UPDATE SET prefix=excluded.prefix,settings_json=excluded.settings_json,updated_at=CURRENT_TIMESTAMP",(gid,prefix,json.dumps(cur,ensure_ascii=False)))
     cur['prefix']=prefix; return cur
