@@ -54,6 +54,10 @@ class Music(commands.Cog):
     def voice_lock(self, guild_id):
         return self.voice_locks.setdefault(guild_id, asyncio.Lock())
 
+    async def defer_if_needed(self, ctx):
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.defer()
+
     async def extract(self, query):
         loop = asyncio.get_running_loop()
 
@@ -76,6 +80,14 @@ class Music(commands.Cog):
 
         return await loop.run_in_executor(None, work)
 
+    async def cleanup_voice(self, guild):
+        vc = guild.voice_client
+        if vc is not None:
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                pass
+
     async def ensure_voice(self, ctx):
         voice_state = getattr(ctx.author, 'voice', None)
         target = voice_state.channel if voice_state else None
@@ -90,33 +102,40 @@ class Music(commands.Cog):
             if vc is not None and vc.is_connected():
                 if vc.channel != target:
                     try:
-                        await vc.move_to(target)
+                        await asyncio.wait_for(vc.move_to(target), timeout=10)
                     except Exception as exc:
+                        print(f'❌ Voice move ({ctx.guild.id}): {type(exc).__name__}: {exc}')
                         await ctx.send(f'❌ Ich konnte nicht in deinen Voice-Channel wechseln: `{type(exc).__name__}`')
                         return None
                 return vc
 
-            # Ein veralteter VoiceClient kann nach einem Verbindungsabbruch noch
-            # registriert sein. Erst sauber entfernen, dann genau einmal verbinden.
+            # Wichtig: reconnect=False. discord.py versucht sonst bei einem kaputten
+            # Voice-Handshake dauerhaft neu zu verbinden, wodurch der Bot sichtbar
+            # immer wieder joint und leavt.
             if vc is not None:
-                try:
-                    await vc.disconnect(force=True)
-                except Exception:
-                    pass
-                await asyncio.sleep(0.5)
+                await self.cleanup_voice(ctx.guild)
 
             try:
-                return await target.connect(timeout=20.0, reconnect=True, self_deaf=True)
+                vc = await target.connect(
+                    timeout=10.0,
+                    reconnect=False,
+                    self_deaf=True,
+                )
+                return vc
             except asyncio.TimeoutError:
-                await ctx.send('❌ Voice-Verbindung hat zu lange gebraucht. Versuch es gleich noch einmal.')
+                print(f'❌ Voice connect timeout ({ctx.guild.id})')
+                await self.cleanup_voice(ctx.guild)
+                await ctx.send('❌ Voice-Verbindung ist fehlgeschlagen (Timeout). Der Bot versucht nicht automatisch erneut zu joinen.')
             except discord.ClientException as exc:
-                # Falls Discord während des Handshakes bereits einen VoiceClient
-                # registriert hat, diesen wiederverwenden statt erneut zu joinen.
+                print(f'❌ Voice ClientException ({ctx.guild.id}): {exc}')
                 existing = ctx.guild.voice_client
                 if existing is not None and existing.is_connected():
                     return existing
+                await self.cleanup_voice(ctx.guild)
                 await ctx.send(f'❌ Voice-Verbindung fehlgeschlagen: `{exc}`')
             except Exception as exc:
+                print(f'❌ Voice connect ({ctx.guild.id}): {type(exc).__name__}: {exc}')
+                await self.cleanup_voice(ctx.guild)
                 await ctx.send(f'❌ Voice-Verbindung fehlgeschlagen: `{type(exc).__name__}`')
             return None
 
@@ -170,6 +189,7 @@ class Music(commands.Cog):
 
     @commands.hybrid_command(name='join', description='Verbindet den Bot mit deinem Voice-Channel.')
     async def join(self, ctx):
+        await self.defer_if_needed(ctx)
         before = ctx.guild.voice_client
         vc = await self.ensure_voice(ctx)
         if vc:
@@ -180,22 +200,17 @@ class Music(commands.Cog):
 
     @commands.hybrid_command(name='leave', description='Trennt den Bot vom Voice-Channel und leert die Queue.')
     async def leave(self, ctx):
+        await self.defer_if_needed(ctx)
         gid = ctx.guild.id
         self.q(gid).clear()
         self.current.pop(gid, None)
         self.looping.discard(gid)
-        vc = ctx.guild.voice_client
-        if vc is not None:
-            try:
-                await vc.disconnect(force=True)
-            except Exception:
-                pass
+        await self.cleanup_voice(ctx.guild)
         await ctx.send('👋 Voice verlassen und Queue geleert.')
 
     @commands.hybrid_command(name='play', description='Spielt einen Song oder fügt ihn zur Warteschlange hinzu.')
     async def play(self, ctx, *, query: str):
-        if ctx.interaction and not ctx.interaction.response.is_done():
-            await ctx.defer()
+        await self.defer_if_needed(ctx)
         vc = await self.ensure_voice(ctx)
         if not vc:
             return
