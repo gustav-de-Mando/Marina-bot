@@ -6,3 +6,4 @@ aiohttp>=3.10,<4
 yt-dlp[default]
 deno
 imageio-ffmpeg
+psycopg[binary]>=3.2,<4
