@@ -116,7 +116,6 @@ class UnifiedTree(app_commands.CommandTree):
 
     async def interaction_check(self,interaction:discord.Interaction)->bool:
         if not interaction.guild or not interaction.command:return True
-        # Bei Gruppen soll die eigentliche Subcommand-Regel geprüft werden.
         command_name=getattr(interaction.command,'name','')
         data=interaction.data or {}
         options=data.get('options') or []
@@ -167,16 +166,16 @@ async def on_ready():
     if not getattr(bot,'_synced_once',False):
         try:
             ensure_command_descriptions()
+            # Globale Slash-Commands sind auf Desktop und Mobile verfügbar und
+            # funktionieren auch auf weiteren Servern. Alte Guild-Duplikate des
+            # Testservers werden vorher entfernt.
             gid=os.environ.get('GUILD_ID','').strip()
             if gid.isdigit():
-                g=discord.Object(id=int(gid))
-                bot.tree.copy_global_to(guild=g)
-                synced=await bot.tree.sync(guild=g)
-                bot.tree.clear_commands(guild=None)
-                await bot.tree.sync()
-                print(f'🔄 {len(synced)} gruppierte Slash-Commands für den Server synchronisiert; globale Duplikate entfernt.')
-            else:
-                synced=await bot.tree.sync(); print(f'🔄 {len(synced)} gruppierte globale Slash-Commands synchronisiert.')
+                guild=discord.Object(id=int(gid))
+                bot.tree.clear_commands(guild=guild)
+                await bot.tree.sync(guild=guild)
+            synced=await bot.tree.sync()
+            print(f'🔄 {len(synced)} gruppierte globale Slash-Commands synchronisiert.')
             bot._synced_once=True
         except Exception as e:print('Sync-Fehler:',e)
 
