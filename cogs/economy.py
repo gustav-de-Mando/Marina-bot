@@ -1,120 +1,266 @@
-import discord,json,os,random
+import random
+from datetime import datetime, timedelta, timezone
+
+import discord
 from discord.ext import commands
-from datetime import datetime,timedelta,timezone
-DATA_FILE='data/economy.json'; CURRENCY='💵'
-def load_data():
-    try:
-        with open(DATA_FILE,encoding='utf-8') as f:return json.load(f)
-    except:return {}
-def save_data(data):
-    os.makedirs('data',exist_ok=True)
-    with open(DATA_FILE,'w',encoding='utf-8') as f:json.dump(data,f,ensure_ascii=False,indent=2)
-def account(data,g,u):
-    return data.setdefault(str(g),{}).setdefault(str(u),{'wallet':500,'bank':0,'last_daily':None,'last_work':None})
-def now():return datetime.now(timezone.utc)
-def parse_dt(v):
-    if not v:return None
-    d=datetime.fromisoformat(v); return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d
-SUITS=['♠️','♥️','♦️','♣️']; RANKS=['2','3','4','5','6','7','8','9','10','J','Q','K','A']
+
+from core.storage import execute, one, query
+
+CURRENCY = '💵'
+SUITS = ['♠️', '♥️', '♦️', '♣️']
+RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+
+
+def now():
+    return datetime.now(timezone.utc)
+
+
+def parse_dt(value):
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
 def deck():
-    d=[(r,s) for r in RANKS for s in SUITS]; random.shuffle(d); return d
+    cards = [(rank, suit) for rank in RANKS for suit in SUITS]
+    random.shuffle(cards)
+    return cards
+
+
 def value(hand):
-    v=sum(11 if r=='A' else 10 if r in 'JQK' else int(r) for r,_ in hand); a=sum(r=='A' for r,_ in hand)
-    while v>21 and a:v-=10;a-=1
-    return v
-def fmt(hand):return ' '.join(f'`{r}{s}`' for r,s in hand)
+    total = sum(11 if rank == 'A' else 10 if rank in 'JQK' else int(rank) for rank, _ in hand)
+    aces = sum(rank == 'A' for rank, _ in hand)
+    while total > 21 and aces:
+        total -= 10
+        aces -= 1
+    return total
+
+
+def fmt(hand):
+    return ' '.join(f'`{rank}{suit}`' for rank, suit in hand)
+
+
+def account(guild_id, user_id):
+    execute('''INSERT INTO economy_accounts(guild_id,user_id,wallet,bank)
+               VALUES(?,?,500,0) ON CONFLICT(guild_id,user_id) DO NOTHING''',
+            (guild_id, user_id))
+    return one('SELECT * FROM economy_accounts WHERE guild_id=? AND user_id=?', (guild_id, user_id))
+
+
+def set_account(guild_id, user_id, *, wallet=None, bank=None, last_daily=None, last_work=None):
+    row = account(guild_id, user_id)
+    execute('''UPDATE economy_accounts SET wallet=?,bank=?,last_daily=?,last_work=?
+               WHERE guild_id=? AND user_id=?''', (
+        row['wallet'] if wallet is None else max(0, int(wallet)),
+        row['bank'] if bank is None else max(0, int(bank)),
+        row['last_daily'] if last_daily is None else last_daily,
+        row['last_work'] if last_work is None else last_work,
+        guild_id, user_id,
+    ))
+    return account(guild_id, user_id)
+
 
 class Economy(commands.Cog):
-    def __init__(self,bot):self.bot=bot;self.games={}
-    def acc(self,ctx,member=None):
-        d=load_data();m=member or ctx.author;a=account(d,ctx.guild.id,m.id);save_data(d);return d,m,a
-    @commands.hybrid_command(name='balance')
-    async def balance(self,ctx,member:discord.Member|None=None):
-        _,m,a=self.acc(ctx,member);e=discord.Embed(title=f'💰 Konto von {m.display_name}',color=discord.Color.green());e.add_field(name='Wallet',value=f"{a['wallet']:,} {CURRENCY}");e.add_field(name='Bank',value=f"{a['bank']:,} {CURRENCY}");e.add_field(name='Gesamt',value=f"{a['wallet']+a['bank']:,} {CURRENCY}");await ctx.send(embed=e)
-    @commands.hybrid_command(name='daily')
-    async def daily(self,ctx):
-        d,_,a=self.acc(ctx);n=now();last=parse_dt(a['last_daily'])
-        if last and n-last<timedelta(hours=24):
-            rem=timedelta(hours=24)-(n-last);return await ctx.send(f'❌ Nächste Daily in **{int(rem.total_seconds()//3600)}h {int(rem.total_seconds()%3600//60)}m**.')
-        amt=random.randint(200,500);a['wallet']+=amt;a['last_daily']=n.isoformat();save_data(d);await ctx.send(f'📅 +**{amt:,} {CURRENCY}** • Wallet: **{a["wallet"]:,}**')
-    @commands.hybrid_command(name='work')
-    async def work(self,ctx):
-        d,_,a=self.acc(ctx);n=now();last=parse_dt(a['last_work'])
-        if last and n-last<timedelta(minutes=30):return await ctx.send(f'❌ Du kannst in **{max(1,int((timedelta(minutes=30)-(n-last)).total_seconds()//60))} Min.** wieder arbeiten.')
-        amt=random.randint(50,200);a['wallet']+=amt;a['last_work']=n.isoformat();save_data(d);await ctx.send(f'💼 Arbeit erledigt: +**{amt:,} {CURRENCY}**')
-    @commands.hybrid_command(name='deposit')
-    async def deposit(self,ctx,amount:str):
-        d,_,a=self.acc(ctx);amt=a['wallet'] if amount.lower()=='all' else int(amount) if amount.isdigit() else 0
-        if amt<=0 or amt>a['wallet']:return await ctx.send('❌ Ungültiger Betrag.')
-        a['wallet']-=amt;a['bank']+=amt;save_data(d);await ctx.send(f'🏦 {amt:,} eingezahlt.')
-    @commands.hybrid_command(name='withdraw')
-    async def withdraw(self,ctx,amount:str):
-        d,_,a=self.acc(ctx);amt=a['bank'] if amount.lower()=='all' else int(amount) if amount.isdigit() else 0
-        if amt<=0 or amt>a['bank']:return await ctx.send('❌ Ungültiger Betrag.')
-        a['bank']-=amt;a['wallet']+=amt;save_data(d);await ctx.send(f'💸 {amt:,} abgehoben.')
-    @commands.hybrid_command(name='pay')
-    async def pay(self,ctx,member:discord.Member,amount:int):
-        if member.bot or member==ctx.author or amount<=0:return await ctx.send('❌ Ungültig.')
-        d=load_data();a=account(d,ctx.guild.id,ctx.author.id);b=account(d,ctx.guild.id,member.id)
-        if a['wallet']<amount:return await ctx.send('❌ Nicht genug Wallet-Guthaben.')
-        a['wallet']-=amount;b['wallet']+=amount;save_data(d);await ctx.send(f'💸 {amount:,} {CURRENCY} an {member.mention}.')
-    @commands.hybrid_command(name='rob')
-    async def rob(self,ctx,member:discord.Member):
-        if member.bot or member==ctx.author:return await ctx.send('❌ Ungültiges Ziel.')
-        d=load_data();a=account(d,ctx.guild.id,ctx.author.id);b=account(d,ctx.guild.id,member.id)
-        if b['wallet']<50:return await ctx.send('❌ Ziel hat zu wenig Spielgeld.')
-        if random.random()<.4:
-            amt=random.randint(50,min(500,b['wallet']));a['wallet']+=amt;b['wallet']-=amt;text=f'🦹 Im Spiel erfolgreich: +{amt:,} {CURRENCY}'
+    def __init__(self, bot):
+        self.bot = bot
+        self.games = {}
+        execute('''CREATE TABLE IF NOT EXISTS economy_accounts(
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            wallet INTEGER DEFAULT 500,
+            bank INTEGER DEFAULT 0,
+            last_daily TEXT,
+            last_work TEXT,
+            PRIMARY KEY(guild_id,user_id)
+        )''')
+
+    def acc(self, ctx, member=None):
+        member = member or ctx.author
+        return member, account(ctx.guild.id, member.id)
+
+    @commands.hybrid_command(name='balance', description='Zeigt Wallet, Bank und Gesamtguthaben.')
+    async def balance(self, ctx, member: discord.Member | None = None):
+        member, acc = self.acc(ctx, member)
+        embed = discord.Embed(title=f'💰 Konto von {member.display_name}', color=discord.Color.green())
+        embed.add_field(name='Wallet', value=f"{acc['wallet']:,} {CURRENCY}")
+        embed.add_field(name='Bank', value=f"{acc['bank']:,} {CURRENCY}")
+        embed.add_field(name='Gesamt', value=f"{acc['wallet'] + acc['bank']:,} {CURRENCY}")
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name='daily', description='Holt deine tägliche Economy-Belohnung ab.')
+    async def daily(self, ctx):
+        _, acc = self.acc(ctx)
+        current = now()
+        last = parse_dt(acc['last_daily'])
+        if last and current - last < timedelta(hours=24):
+            remaining = timedelta(hours=24) - (current - last)
+            return await ctx.send(f'❌ Nächste Daily in **{int(remaining.total_seconds() // 3600)}h {int(remaining.total_seconds() % 3600 // 60)}m**.')
+        amount = random.randint(200, 500)
+        acc = set_account(ctx.guild.id, ctx.author.id, wallet=acc['wallet'] + amount, last_daily=current.isoformat())
+        await ctx.send(f'📅 +**{amount:,} {CURRENCY}** • Wallet: **{acc["wallet"]:,}**')
+
+    @commands.hybrid_command(name='work', description='Verdient Spielgeld durch Arbeit.')
+    async def work(self, ctx):
+        _, acc = self.acc(ctx)
+        current = now()
+        last = parse_dt(acc['last_work'])
+        if last and current - last < timedelta(minutes=30):
+            remaining = timedelta(minutes=30) - (current - last)
+            return await ctx.send(f'❌ Du kannst in **{max(1, int(remaining.total_seconds() // 60))} Min.** wieder arbeiten.')
+        amount = random.randint(50, 200)
+        set_account(ctx.guild.id, ctx.author.id, wallet=acc['wallet'] + amount, last_work=current.isoformat())
+        await ctx.send(f'💼 Arbeit erledigt: +**{amount:,} {CURRENCY}**')
+
+    @commands.hybrid_command(name='deposit', description='Zahlt Spielgeld von der Wallet auf die Bank ein.')
+    async def deposit(self, ctx, amount: str):
+        _, acc = self.acc(ctx)
+        amount_value = acc['wallet'] if amount.lower() == 'all' else int(amount) if amount.isdigit() else 0
+        if amount_value <= 0 or amount_value > acc['wallet']:
+            return await ctx.send('❌ Ungültiger Betrag.')
+        set_account(ctx.guild.id, ctx.author.id, wallet=acc['wallet'] - amount_value, bank=acc['bank'] + amount_value)
+        await ctx.send(f'🏦 {amount_value:,} eingezahlt.')
+
+    @commands.hybrid_command(name='withdraw', description='Hebt Spielgeld von der Bank in die Wallet ab.')
+    async def withdraw(self, ctx, amount: str):
+        _, acc = self.acc(ctx)
+        amount_value = acc['bank'] if amount.lower() == 'all' else int(amount) if amount.isdigit() else 0
+        if amount_value <= 0 or amount_value > acc['bank']:
+            return await ctx.send('❌ Ungültiger Betrag.')
+        set_account(ctx.guild.id, ctx.author.id, wallet=acc['wallet'] + amount_value, bank=acc['bank'] - amount_value)
+        await ctx.send(f'💸 {amount_value:,} abgehoben.')
+
+    @commands.hybrid_command(name='pay', description='Überweist einem Mitglied Spielgeld.')
+    async def pay(self, ctx, member: discord.Member, amount: int):
+        if member.bot or member == ctx.author or amount <= 0:
+            return await ctx.send('❌ Ungültig.')
+        sender = account(ctx.guild.id, ctx.author.id)
+        receiver = account(ctx.guild.id, member.id)
+        if sender['wallet'] < amount:
+            return await ctx.send('❌ Nicht genug Wallet-Guthaben.')
+        set_account(ctx.guild.id, ctx.author.id, wallet=sender['wallet'] - amount)
+        set_account(ctx.guild.id, member.id, wallet=receiver['wallet'] + amount)
+        await ctx.send(f'💸 {amount:,} {CURRENCY} an {member.mention}.')
+
+    @commands.hybrid_command(name='rob', description='Versucht im Economy-Spiel Spielgeld zu stehlen.')
+    async def rob(self, ctx, member: discord.Member):
+        if member.bot or member == ctx.author:
+            return await ctx.send('❌ Ungültiges Ziel.')
+        actor = account(ctx.guild.id, ctx.author.id)
+        target = account(ctx.guild.id, member.id)
+        if target['wallet'] < 50:
+            return await ctx.send('❌ Ziel hat zu wenig Spielgeld.')
+        if random.random() < .4:
+            amount = random.randint(50, min(500, target['wallet']))
+            set_account(ctx.guild.id, ctx.author.id, wallet=actor['wallet'] + amount)
+            set_account(ctx.guild.id, member.id, wallet=target['wallet'] - amount)
+            text = f'🦹 Im Spiel erfolgreich: +{amount:,} {CURRENCY}'
         else:
-            amt=random.randint(100,300);a['wallet']=max(0,a['wallet']-amt);text=f'🚔 Im Spiel gescheitert: -{amt:,} {CURRENCY}'
-        save_data(d);await ctx.send(text)
-    @commands.hybrid_command(name='richlist')
-    async def richlist(self,ctx):
-        d=load_data().get(str(ctx.guild.id),{});rows=[]
-        for uid,a in d.items():
-            m=ctx.guild.get_member(int(uid));
-            if m:rows.append((m.display_name,a['wallet']+a['bank']))
-        rows.sort(key=lambda x:x[1],reverse=True);await ctx.send(embed=discord.Embed(title='💰 Richlist',description='\n'.join(f'`{i}.` **{n}** — {v:,} {CURRENCY}' for i,(n,v) in enumerate(rows[:10],1)) or 'Keine Daten.'))
-    @commands.hybrid_command(name='blackjack')
-    async def blackjack(self,ctx,einsatz:int):
-        if einsatz<=0:return await ctx.send('❌ Einsatz muss positiv sein.')
-        d=load_data();a=account(d,ctx.guild.id,ctx.author.id);key=f'{ctx.guild.id}_{ctx.author.id}'
-        if a['wallet']<einsatz:return await ctx.send('❌ Nicht genug Spielgeld.')
-        if key in self.games:return await ctx.send('❌ Du hast bereits ein Spiel.')
-        dk=deck();p=[dk.pop(),dk.pop()];dealer=[dk.pop(),dk.pop()];a['wallet']-=einsatz;save_data(d);self.games[key]={'deck':dk,'player':p,'dealer':dealer,'stake':einsatz,'data':d,'acc':a}
-        if value(p)==21:
-            a['wallet']+=int(einsatz*2.5);save_data(d);self.games.pop(key,None);return await ctx.send(f'🃏 Blackjack! +{int(einsatz*1.5):,} {CURRENCY}')
-        await ctx.send(embed=self.embed(p,dealer,einsatz,True),view=BlackjackView(self,key,ctx.author.id))
-    def embed(self,p,d,s,hidden=False,result=None):
-        e=discord.Embed(title='🃏 Blackjack',color=discord.Color.blurple());e.add_field(name=f'Deine Hand ({value(p)})',value=fmt(p),inline=False);e.add_field(name='Dealer (?)' if hidden else f'Dealer ({value(d)})',value=f'{fmt([d[0]])} `??`' if hidden else fmt(d),inline=False);e.add_field(name='Einsatz',value=f'{s:,} {CURRENCY}');
-        if result:e.add_field(name='Ergebnis',value=result,inline=False)
-        return e
-    async def finish(self,interaction,key):
-        g=self.games.pop(key,None)
-        if not g:return
-        while value(g['dealer'])<17:g['dealer'].append(g['deck'].pop())
-        p,d=value(g['player']),value(g['dealer']);stake=g['stake']
-        if p>21:r=f'Bust: -{stake:,}'
-        elif d>21 or p>d:g['acc']['wallet']+=stake*2;r=f'Gewonnen: +{stake:,}'
-        elif p==d:g['acc']['wallet']+=stake;r='Unentschieden'
-        else:r=f'Verloren: -{stake:,}'
-        save_data(g['data']);await interaction.response.edit_message(embed=self.embed(g['player'],g['dealer'],stake,False,r),view=None)
+            amount = random.randint(100, 300)
+            set_account(ctx.guild.id, ctx.author.id, wallet=max(0, actor['wallet'] - amount))
+            text = f'🚔 Im Spiel gescheitert: -{amount:,} {CURRENCY}'
+        await ctx.send(text)
+
+    @commands.hybrid_command(name='richlist', description='Zeigt die reichsten Economy-Konten des Servers.')
+    async def richlist(self, ctx):
+        rows = query('''SELECT user_id,wallet,bank FROM economy_accounts
+                        WHERE guild_id=? ORDER BY (wallet+bank) DESC LIMIT 10''', (ctx.guild.id,))
+        lines = []
+        for i, row in enumerate(rows, 1):
+            member = ctx.guild.get_member(row['user_id'])
+            name = member.display_name if member else str(row['user_id'])
+            lines.append(f'`{i}.` **{name}** — {row["wallet"] + row["bank"]:,} {CURRENCY}')
+        await ctx.send(embed=discord.Embed(title='💰 Richlist', description='\n'.join(lines) or 'Keine Daten.'))
+
+    @commands.hybrid_command(name='blackjack', description='Startet eine Runde Blackjack mit Spielgeld.')
+    async def blackjack(self, ctx, einsatz: int):
+        if einsatz <= 0:
+            return await ctx.send('❌ Einsatz muss positiv sein.')
+        acc = account(ctx.guild.id, ctx.author.id)
+        key = f'{ctx.guild.id}_{ctx.author.id}'
+        if acc['wallet'] < einsatz:
+            return await ctx.send('❌ Nicht genug Spielgeld.')
+        if key in self.games:
+            return await ctx.send('❌ Du hast bereits ein Spiel.')
+        cards = deck()
+        player = [cards.pop(), cards.pop()]
+        dealer = [cards.pop(), cards.pop()]
+        self.games[key] = {'deck': cards, 'player': player, 'dealer': dealer, 'stake': einsatz,
+                           'guild_id': ctx.guild.id, 'user_id': ctx.author.id}
+        if value(player) == 21:
+            acc = account(ctx.guild.id, ctx.author.id)
+            win = int(einsatz * 1.5)
+            set_account(ctx.guild.id, ctx.author.id, wallet=acc['wallet'] + win)
+            self.games.pop(key, None)
+            return await ctx.send(f'🃏 Blackjack! +{win:,} {CURRENCY}')
+        await ctx.send(embed=self.embed(player, dealer, einsatz, True), view=BlackjackView(self, key, ctx.author.id))
+
+    def embed(self, player, dealer, stake, hidden=False, result=None):
+        embed = discord.Embed(title='🃏 Blackjack', color=discord.Color.blurple())
+        embed.add_field(name=f'Deine Hand ({value(player)})', value=fmt(player), inline=False)
+        embed.add_field(name='Dealer (?)' if hidden else f'Dealer ({value(dealer)})',
+                        value=f'{fmt([dealer[0]])} `??`' if hidden else fmt(dealer), inline=False)
+        embed.add_field(name='Einsatz', value=f'{stake:,} {CURRENCY}')
+        if result:
+            embed.add_field(name='Ergebnis', value=result, inline=False)
+        return embed
+
+    async def finish(self, interaction, key):
+        game = self.games.pop(key, None)
+        if not game:
+            return
+        while value(game['dealer']) < 17:
+            game['dealer'].append(game['deck'].pop())
+        player_value = value(game['player'])
+        dealer_value = value(game['dealer'])
+        stake = game['stake']
+        delta = 0
+        if player_value > 21:
+            delta = -stake
+            result = f'Bust: -{stake:,}'
+        elif dealer_value > 21 or player_value > dealer_value:
+            delta = stake
+            result = f'Gewonnen: +{stake:,}'
+        elif player_value == dealer_value:
+            result = 'Unentschieden'
+        else:
+            delta = -stake
+            result = f'Verloren: -{stake:,}'
+        acc = account(game['guild_id'], game['user_id'])
+        set_account(game['guild_id'], game['user_id'], wallet=max(0, acc['wallet'] + delta))
+        await interaction.response.edit_message(embed=self.embed(game['player'], game['dealer'], stake, False, result), view=None)
+
 
 class BlackjackView(discord.ui.View):
-    def __init__(self,cog,key,user_id):super().__init__(timeout=60);self.cog=cog;self.key=key;self.user_id=user_id
-    async def interaction_check(self,i):
-        if i.user.id!=self.user_id:await i.response.send_message('❌ Nicht dein Spiel.',ephemeral=True);return False
+    def __init__(self, cog, key, user_id):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.key = key
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('❌ Nicht dein Spiel.', ephemeral=True)
+            return False
         return True
-    @discord.ui.button(label='Hit 🃏',style=discord.ButtonStyle.green)
-    async def hit(self,i,b):
-        g=self.cog.games.get(self.key)
-        if not g:return await i.response.send_message('Spiel beendet.',ephemeral=True)
-        g['player'].append(g['deck'].pop())
-        if value(g['player'])>=21:return await self.cog.finish(i,self.key)
-        await i.response.edit_message(embed=self.cog.embed(g['player'],g['dealer'],g['stake'],True),view=self)
-    @discord.ui.button(label='Stand 🛑',style=discord.ButtonStyle.red)
-    async def stand(self,i,b):await self.cog.finish(i,self.key)
+
+    @discord.ui.button(label='Hit 🃏', style=discord.ButtonStyle.green)
+    async def hit(self, interaction, button):
+        game = self.cog.games.get(self.key)
+        if not game:
+            return await interaction.response.send_message('Spiel beendet.', ephemeral=True)
+        game['player'].append(game['deck'].pop())
+        if value(game['player']) >= 21:
+            return await self.cog.finish(interaction, self.key)
+        await interaction.response.edit_message(embed=self.cog.embed(game['player'], game['dealer'], game['stake'], True), view=self)
+
+    @discord.ui.button(label='Stand 🛑', style=discord.ButtonStyle.red)
+    async def stand(self, interaction, button):
+        await self.cog.finish(interaction, self.key)
+
     async def on_timeout(self):
-        g=self.cog.games.pop(self.key,None)
-        if g:g['acc']['wallet']+=g['stake'];save_data(g['data'])
-async def setup(bot):await bot.add_cog(Economy(bot))
+        self.cog.games.pop(self.key, None)
+
+
+async def setup(bot):
+    await bot.add_cog(Economy(bot))
